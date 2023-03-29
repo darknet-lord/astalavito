@@ -127,3 +127,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+astalavito-data/
+poetry.lock
+logs/
+.idea/
+*.swp
+astalavito/settings.py
