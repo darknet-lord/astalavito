@@ -1,3 +1,6 @@
+import abc
+import argparse
+import functools
 import logging
 import re
 import typing
@@ -149,14 +152,50 @@ class ItemParser:
             yield item
 
 
+class AbstractEventProducer(abc.ABC):
+
+    @abc.abstractmethod
+    def produce(self, item_id: int, event: models.Event) -> None:
+        raise NotImplementedError
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
+class ConsoleEventProducer(AbstractEventProducer):
+
+    def produce(self, item_id: int, event: models.Event) -> None:
+        print(f"{item_id}: {event}")
+
+
+class KafkaEventProducer(AbstractEventProducer):
+
+    def produce(self, item_id: int, event: models.Event) -> None:
+        self._produce(key=str(item_id), value=event.json())
+
+    def __enter__(self):
+        conf = settings.KAFKA_BOOTSTRAP_SERVERS | {"client.id": socket.gethostname()}
+        self.producer = Producer(conf)
+        topic = settings.KAFKA_TOPIC
+        self._produce = functools.partial(self.producer.produce, topic)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.producer.flush()
+
+
 class Scanner:
 
-    def __init__(self, filter_name: str, filter_url: str):
+    def __init__(self, filter_name: str, filter_url: str, producer_manager: type[AbstractEventProducer]):
         self.filter_name = filter_name
         self.filter_url = filter_url
         self.item_parser = ItemParser()
+        self.producer_manager = producer_manager
 
-    def run(self):
+    def find_items(self):
         driver = webdriver.Chrome()
         driver.get(self.filter_url)
         pagination_elems_xpath = "//span[starts-with(@class,'pagination-item')]"
@@ -167,19 +206,19 @@ class Scanner:
         elements = driver.find_elements(By.XPATH, "//div[@data-marker='item']")
         items = self.item_parser.elements_to_items(elements)
 
-        conf = settings.KAFKA_BOOTSTRAP_SERVERS | {"client.id": socket.gethostname()}
-        producer = Producer(conf)
-        topic = settings.KAFKA_TOPIC
-
         for item in items:
-            payload = models.Event(
+            event = models.Event(
                 filter_name=self.filter_name,
                 event_datetime=datetime.now(),
                 item_data=models.EventItemData(**item.dict()),
             )
-            producer.produce(topic, key=str(item.item_id), value=payload.json())
-        producer.flush()
+            yield item.item_id, event
         driver.close()
+
+    def run(self):
+        with self.producer_manager() as producer:
+            for item_id, event in self.find_items():
+                producer.produce(item_id=item_id, event=event)
 
 
 def get_active_scan_filters():
@@ -195,16 +234,29 @@ def get_active_scan_filters():
         return (f for f in filters if f.is_active)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser("astalavito")
+    parser.add_argument("-pm", "--producer-manager", choices=['kafka', 'console'], default='kafka')
+    return parser.parse_args()
+
+
 def main():
     mp.set_start_method("spawn")
 
     active_filters = get_active_scan_filters()
+
+    args = parse_args()
+    producer_manager = {
+        "kafka": KafkaEventProducer,
+        "console": ConsoleEventProducer,
+    }[args.producer_manager]
 
     scan_procs = []
     for scan_filter in active_filters:
         scanner = Scanner(
             filter_name=scan_filter.name,
             filter_url=scan_filter.url,
+            producer_manager=producer_manager,
         )
         scanner_proc = mp.Process(target=scanner.run)
         scan_procs.append(scanner_proc)
