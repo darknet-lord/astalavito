@@ -1,6 +1,4 @@
-import abc
 import argparse
-import functools
 import logging
 import re
 import typing
@@ -15,8 +13,7 @@ from astalavito import models
 from astalavito import settings
 import multiprocessing as mp
 
-from confluent_kafka import Producer
-import socket
+from event_producers import AbstractEventProducer, KafkaEventProducer, ConsoleEventProducer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -152,48 +149,14 @@ class ItemParser:
             yield item
 
 
-class AbstractEventProducer(abc.ABC):
-
-    @abc.abstractmethod
-    def produce(self, item_id: int, event: models.Event) -> None:
-        raise NotImplementedError
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
-
-
-class ConsoleEventProducer(AbstractEventProducer):
-
-    def produce(self, item_id: int, event: models.Event) -> None:
-        print(f"{item_id}: {event}")
-
-
-class KafkaEventProducer(AbstractEventProducer):
-
-    def produce(self, item_id: int, event: models.Event) -> None:
-        self._produce(key=str(item_id), value=event.json())
-
-    def __enter__(self):
-        conf = settings.KAFKA_BOOTSTRAP_SERVERS | {"client.id": socket.gethostname()}
-        self.producer = Producer(conf)
-        topic = settings.KAFKA_TOPIC
-        self._produce = functools.partial(self.producer.produce, topic)
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.producer.flush()
-
 
 class Scanner:
 
-    def __init__(self, filter_name: str, filter_url: str, producer_manager: type[AbstractEventProducer]):
+    def __init__(self, filter_name: str, filter_url: str, event_producer: AbstractEventProducer):
         self.filter_name = filter_name
         self.filter_url = filter_url
         self.item_parser = ItemParser()
-        self.producer_manager = producer_manager
+        self.event_producer = event_producer
 
     def find_items(self):
         driver = webdriver.Chrome()
@@ -207,18 +170,18 @@ class Scanner:
         items = self.item_parser.elements_to_items(elements)
 
         for item in items:
-            event = models.Event(
+            event = models.ParserEvent(
                 filter_name=self.filter_name,
                 event_datetime=datetime.now(),
-                item_data=models.EventItemData(**item.dict()),
+                item_data=models.ParserEventItemData(**item.dict()),
             )
             yield item.item_id, event
         driver.close()
 
     def run(self):
-        with self.producer_manager() as producer:
-            for item_id, event in self.find_items():
-                producer.produce(item_id=item_id, event=event)
+        producer = self.event_producer
+        for item_id, event in self.find_items():
+            producer.produce(item_id=item_id, event=event)
 
 
 def get_active_scan_filters():
@@ -252,14 +215,15 @@ def main():
     }[args.producer_manager]
 
     scan_procs = []
-    for scan_filter in active_filters:
-        scanner = Scanner(
-            filter_name=scan_filter.name,
-            filter_url=scan_filter.url,
-            producer_manager=producer_manager,
-        )
-        scanner_proc = mp.Process(target=scanner.run)
-        scan_procs.append(scanner_proc)
+    with producer_manager(topic=settings.KAFKA_PARSER_TOPIC) as producer:
+        for scan_filter in active_filters:
+            scanner = Scanner(
+                filter_name=scan_filter.name,
+                filter_url=scan_filter.url,
+                event_producer=producer,
+            )
+            scanner_proc = mp.Process(target=scanner.run)
+            scan_procs.append(scanner_proc)
 
     for proc in scan_procs:
         proc.start()

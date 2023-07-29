@@ -55,7 +55,7 @@ class Item(BaseModel):
         return f"Item {self.name}"
 
 
-class EventItemData(BaseModel):
+class ParserEventItemData(BaseModel):
     item_id: PositiveInt
     name: str
     price: PositiveInt
@@ -63,12 +63,11 @@ class EventItemData(BaseModel):
     price_currency: str
 
 
-class Event(BaseModel):
-    __tablename__ = "events"
+class ParserEvent(BaseModel):
 
     filter_name: str
     event_datetime: datetime.datetime
-    item_data: EventItemData
+    item_data: ParserEventItemData
 
     def __str__(self):
-        return f"Event {self.event_datetime.isoformat()}, {self.item_data.item_id} ({self.filter_name})"
+        return f"ParserEvent {self.event_datetime.isoformat()}, {self.item_data.item_id} ({self.filter_name})"

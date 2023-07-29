@@ -1,7 +1,7 @@
 import requests
 from nicegui import ui
 
-from astalavito.models import Event
+from astalavito.models import ParserEvent
 
 
 def get_events():
