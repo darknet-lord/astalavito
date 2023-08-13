@@ -1,28 +1,27 @@
-import argparse
+import abc
 import logging
+
+from selenium.common import NoSuchElementException
 import re
 import typing
-from datetime import datetime, timedelta
 
-from selenium import webdriver
-from selenium.common import NoSuchElementException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
+from datetime import datetime, timedelta
 
 from astalavito import models
-from astalavito import settings
-import multiprocessing as mp
-
-from event_producers import AbstractEventProducer, KafkaEventProducer, ConsoleEventProducer
 
 LOGGER = logging.getLogger(__name__)
 
 
-class ScannerException(Exception):
-    pass
+class AbstractParser(abc.ABC):
+
+    @abc.abstractmethod
+    def parse(self, root: WebElement | list[WebElement]) -> typing.Iterable[models.Item]:
+        raise NotImplementedError
 
 
-class ItemParser:
+class ItemParser(AbstractParser):
 
     @classmethod
     def parse_square_price(cls, price_string: str) -> int | None:
@@ -68,12 +67,12 @@ class ItemParser:
     def get_text(self, element: WebElement, default_retval: typing.Any = None) -> typing.Any:
         return element.text if element else default_retval
 
-    def elements_to_items(self, elements: list[WebElement]) -> typing.Generator[models.Item, None, None]:
+    def parse(self, root: WebElement | list[WebElement]) -> typing.Generator[models.Item, None, None]:
         find = self.find
         find_many = self.find_many
         get_text = self.get_text
 
-        for elm in elements:
+        for elm in root:
             item_id = elm.get_attribute("data-item-id")  # prop
             title_elem = find(elm, ".//div[starts-with(@class, 'iva-item-titleStep')]")
             name = title_elem.text  # prop
@@ -149,88 +148,7 @@ class ItemParser:
             yield item
 
 
+class SinglePageParser(AbstractParser):
 
-class Scanner:
-
-    def __init__(self, filter_name: str, filter_url: str, event_producer: AbstractEventProducer):
-        self.filter_name = filter_name
-        self.filter_url = filter_url
-        self.item_parser = ItemParser()
-        self.event_producer = event_producer
-
-    def find_items(self):
-        driver = webdriver.Chrome()
-        driver.get(self.filter_url)
-        pagination_elems_xpath = "//span[starts-with(@class,'pagination-item')]"
-        spans = driver.find_elements(By.XPATH, pagination_elems_xpath)[1:-1]
-        page_count = int(spans[-1].text)
-        LOGGER.debug("got %d pages for %s", page_count, self.filter_name)
-
-        elements = driver.find_elements(By.XPATH, "//div[@data-marker='item']")
-        items = self.item_parser.elements_to_items(elements)
-
-        for item in items:
-            event = models.ParserEvent(
-                filter_name=self.filter_name,
-                event_datetime=datetime.now(),
-                item_data=models.ParserEventItemData(**item.dict()),
-            )
-            yield item.item_id, event
-        driver.close()
-
-    def run(self):
-        producer = self.event_producer
-        for item_id, event in self.find_items():
-            producer.produce(item_id=item_id, event=event)
-
-
-def get_active_scan_filters():
-    # TODO: Move to tests
-    if settings.TESTING:
-        class TestScanFilter:
-            url = "http://localhost/astalavito/kaluga1.html"
-            name = "test scan filter"
-            filter_id = 1
-        return [TestScanFilter()]
-    else:
-        filters = (models.ScanFilter(**filter_data) for filter_data in settings.FILTERS.values())
-        return (f for f in filters if f.is_active)
-
-
-def parse_args():
-    parser = argparse.ArgumentParser("astalavito")
-    parser.add_argument("-pm", "--producer-manager", choices=['kafka', 'console'], default='kafka')
-    return parser.parse_args()
-
-
-def main():
-    mp.set_start_method("spawn")
-
-    active_filters = get_active_scan_filters()
-
-    args = parse_args()
-    producer_manager = {
-        "kafka": KafkaEventProducer,
-        "console": ConsoleEventProducer,
-    }[args.producer_manager]
-
-    scan_procs = []
-    with producer_manager(topic=settings.KAFKA_PARSER_TOPIC) as producer:
-        for scan_filter in active_filters:
-            scanner = Scanner(
-                filter_name=scan_filter.name,
-                filter_url=scan_filter.url,
-                event_producer=producer,
-            )
-            scanner_proc = mp.Process(target=scanner.run)
-            scan_procs.append(scanner_proc)
-
-    for proc in scan_procs:
-        proc.start()
-
-    for proc in scan_procs:
-        proc.join()
-
-
-if __name__ == "__main__":
-    main()
+    def parse(self, root: WebElement | list[WebElement]) -> typing.Iterable[models.Item]:
+        pass

@@ -2,7 +2,7 @@ import datetime
 
 import pytest
 
-from astalavito.scanner import Item, ItemParser
+from astalavito.scanners import Item, ItemParser
 
 
 CURRENT_DATETIME = datetime.datetime.now()

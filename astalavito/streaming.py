@@ -4,13 +4,12 @@ import faust
 
 from astalavito import settings
 from astalavito.models import ParserEventItemData
-from event_producers import KafkaEventProducer
+from event_producers import ChangesKafkaEventProducer
 
 app = faust.App('astalavito', broker=settings.FAUST_BROKER, store=settings.FAUST_ROCKSDB_CONNSTR)
 
 
 class ParserEventPayload(faust.Record):
-    filter_name: str
     event_datetime: str
     item_data: ParserEventItemData
 
@@ -43,7 +42,7 @@ async def parser_event(change_event):
 
 @app.agent(parser_topic)
 async def parser_event(parser_events):
-    with KafkaEventProducer(topic=settings.KAFKA_CHANGES_TOPIC) as producer:
+    with ChangesKafkaEventProducer() as producer:
         async for event in parser_events:
             print(f'Event received {event}')
             item_id = event.item_data["item_id"]

@@ -65,9 +65,8 @@ class ParserEventItemData(BaseModel):
 
 class ParserEvent(BaseModel):
 
-    filter_name: str
     event_datetime: datetime.datetime
     item_data: ParserEventItemData
 
     def __str__(self):
-        return f"ParserEvent {self.event_datetime.isoformat()}, {self.item_data.item_id} ({self.filter_name})"
+        return f"ParserEvent {self.event_datetime.isoformat()}, {self.item_data.item_id}"

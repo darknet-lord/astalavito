@@ -1,3 +1,3 @@
-from astalavito.scanner import main
+from astalavito.scanners import main
 
 main()
